@@ -49,7 +49,7 @@ export const SelfHostModal: React.FC<SelfHostModalProps> = ({ isOpen, onClose })
               Deploy in seconds without needing any system dependencies:
             </p>
             <div className="p-3 bg-[#090A0E] rounded-lg border border-white/5 text-[11px] text-amber-300 font-mono overflow-x-auto">
-              <code>docker run -d --name yt-load -p 3000:3000 --restart always ghcr.io/nishan/yt-load:latest</code>
+              <code>docker run -d --name yt-load -p 3000:3000 --restart always ghcr.io/nishan-bajagain/yt-load:latest</code>
             </div>
           </div>
 
@@ -63,7 +63,7 @@ export const SelfHostModal: React.FC<SelfHostModalProps> = ({ isOpen, onClose })
               <code>{`version: '3.8'
 services:
   yt-load:
-    build: .
+    image: ghcr.io/nishan-bajagain/yt-load:latest
     container_name: yt-load
     restart: unless-stopped
     ports:
@@ -71,8 +71,33 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3000
+      # Optional: paste YouTube cookies to fix "Could not play" on cloud IPs
+      # - YOUTUBE_COOKIE=your_cookie_string_here
+      # Optional: HTTP/SOCKS proxy if your server IP is blocked by YouTube
+      # - YOUTUBE_PROXY=http://user:pass@proxy:3128
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=2G`}</code>
+            </div>
+          </div>
+
+          {/* Cookie / Proxy Fix */}
+          <div className="rounded-xl border border-amber-400/20 p-4 bg-amber-400/5 space-y-2.5">
+            <div className="flex items-center space-x-2 text-amber-400 font-semibold text-xs">
+              <ShieldCheck className="w-4 h-4 text-amber-400" />
+              <span>Fixing &quot;Could not play&quot; on Production / Cloud Servers</span>
+            </div>
+            <p className="text-xs text-slate-400">
+              YouTube blocks unauthenticated requests from datacenter IPs (Vercel, AWS, Railway, Heroku).
+              The app automatically uses <code className="text-amber-300">TV / Embedded</code> clients which are more resilient,
+              but for maximum compatibility on cloud deployments, set a <code className="text-amber-300">YOUTUBE_COOKIE</code> environment variable
+              with a valid signed-in YouTube session cookie string.
+            </p>
+            <div className="p-3 bg-[#090A0E] rounded-lg border border-white/5 text-[11px] text-amber-300 font-mono overflow-x-auto">
+              <code>{`# .env.local or hosting dashboard env vars:
+YOUTUBE_COOKIE="VISITOR_INFO1_LIVE=xxx; YSC=xxx; __Secure-3PSID=xxx; ..."
+
+# Or use an HTTP/SOCKS proxy for a residential IP:
+YOUTUBE_PROXY=http://user:pass@proxy.host:3128`}</code>
             </div>
           </div>
 
@@ -90,7 +115,10 @@ services:
                 native binaries for Linux, macOS, and Windows.
               </li>
               <li>
-                <strong className="text-white">Anti-403 Stream Resilience:</strong> Built-in dual stream routing guarantees smooth downloads across all regions.
+                <strong className="text-white">Anti-403 / Anti-Bot Resilience:</strong> Forces{' '}
+                <code className="text-amber-300 font-mono">TV_EMBEDDED</code> and{' '}
+                <code className="text-amber-300 font-mono">VisionOS</code> clients with 3-layer metadata fallback
+                (InnerTube → Ytdl → oEmbed) to stay working on all hosting providers.
               </li>
             </ul>
           </div>

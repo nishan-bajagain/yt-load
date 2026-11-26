@@ -65,6 +65,36 @@ npm run start
 
 ---
 
+## ☁️ Production / Cloud Deployment Fix
+
+> **If you get "Unknown Title" or "Could not play" errors after deploying to a cloud server** (Vercel, Railway, Render, AWS, etc.) — this is caused by YouTube blocking unauthenticated requests from datacenter IPs.
+
+YT-LOAD includes a **3-layer resilient fallback** (InnerTube TV_EMBEDDED → Ytdl with TV/VisionOS clients → oEmbed) that handles most cases automatically. For maximum reliability, provide a YouTube session cookie:
+
+### Option A: Environment Variable (Recommended)
+```bash
+# .env.local or your hosting dashboard:
+YOUTUBE_COOKIE="VISITOR_INFO1_LIVE=xxx; YSC=xxx; __Secure-3PSID=xxx; ..."
+```
+
+**How to get your cookie:**
+1. Open [youtube.com](https://youtube.com) in Chrome, sign in
+2. Open **DevTools (F12)** → **Application** → **Cookies** → `youtube.com`
+3. Copy the full `Cookie` header value (all `key=value` pairs joined by `;`)
+4. Paste as `YOUTUBE_COOKIE` in your environment
+
+### Option B: Proxy (Residential IP)
+```bash
+YOUTUBE_PROXY=http://user:pass@proxy.host:3128
+```
+
+### Option C: `cookies.txt` file
+Place a `cookies.txt` file in the project root (Netscape format or raw cookie string). The app reads it automatically on startup.
+
+See [`.env.example`](.env.example) for all options.
+
+---
+
 ## 🐳 Docker Deployment
 
 ### One-Command Run

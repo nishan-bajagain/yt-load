@@ -1,4 +1,6 @@
 import { Innertube, UniversalCache, Platform } from 'youtubei.js';
+import fs from 'fs';
+import path from 'path';
 
 // Configure Platform.shim.eval so YouTube player deciphering functions execute cleanly in Node
 Platform.shim.eval = (data: any, env: any) => {
@@ -15,6 +17,64 @@ let innertubeInstance: Innertube | null = null;
 let innertubePromise: Promise<Innertube> | null = null;
 
 /**
+ * Reads YouTube cookies from environment variables or local cookies.txt file.
+ * Vital for production cloud deployments (Vercel, AWS, Railway, Docker) where YouTube checks authentication.
+ */
+export function getYouTubeCookie(): string | undefined {
+  if (process.env.YOUTUBE_COOKIE && process.env.YOUTUBE_COOKIE.trim()) {
+    return process.env.YOUTUBE_COOKIE.trim();
+  }
+  if (process.env.YT_COOKIE && process.env.YT_COOKIE.trim()) {
+    return process.env.YT_COOKIE.trim();
+  }
+  try {
+    const cookiePath = path.resolve(process.cwd(), 'cookies.txt');
+    if (fs.existsSync(cookiePath)) {
+      const content = fs.readFileSync(cookiePath, 'utf8').trim();
+      if (content) return content;
+    }
+  } catch (e) {
+    // ignore
+  }
+  return undefined;
+}
+
+/**
+ * Creates custom fetch dispatcher when an HTTP/HTTPS/SOCKS proxy is configured.
+ */
+export function getYouTubeProxyFetch(): typeof fetch | undefined {
+  const proxyUrl = process.env.YOUTUBE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+  if (!proxyUrl) return undefined;
+
+  try {
+    const { ProxyAgent, fetch: uFetch } = require('undici');
+    const agent = new ProxyAgent(proxyUrl);
+    return ((url: any, init: any) => {
+      return uFetch(url, { ...init, dispatcher: agent });
+    }) as any;
+  } catch (e) {
+    console.warn('[Proxy] Failed to initialize ProxyAgent:', e);
+    return undefined;
+  }
+}
+
+/**
+ * Factory for creating a production-hardened Ytdl instance.
+ * Explicitly forces TV and Embedded clients to prevent the "Could not prepare player" error on datacenter IPs.
+ */
+export async function createResilientYtdl() {
+  const { Ytdl, Client } = await import('@distube/ytdl-core');
+  const cookie = getYouTubeCookie();
+  const proxyFetch = getYouTubeProxyFetch();
+
+  return new Ytdl({
+    clients: [Client.Tv, Client.WebEmbedded, Client.VisionOS],
+    ...(cookie ? { cookie } : {}),
+    ...(proxyFetch ? { fetch: proxyFetch } : {}),
+  });
+}
+
+/**
  * Returns a cached singleton Innertube client instance.
  * Avoids repeated session handshakes and cold starts across API requests.
  */
@@ -29,9 +89,14 @@ export async function getInnertube(): Promise<Innertube> {
 
   innertubePromise = (async () => {
     try {
+      const cookie = getYouTubeCookie();
+      const proxyFetch = getYouTubeProxyFetch();
+
       const client = await Innertube.create({
         cache: new UniversalCache(false),
         generate_session_locally: true,
+        ...(cookie ? { cookie } : {}),
+        ...(proxyFetch ? { fetch: proxyFetch as any } : {}),
       });
       innertubeInstance = client;
       return client;
@@ -119,9 +184,46 @@ const resolutionRank: Record<string, number> = {
 };
 
 /**
- * Fetches video metadata with dual-engine fallback (YouTube.js -> Ytdl).
+ * Guaranteed fallback metadata extractor via YouTube's public oEmbed endpoint.
+ * Never blocked on cloud servers/datacenter IPs.
+ */
+export async function fetchOEmbedMetadata(videoId: string): Promise<{
+  title?: string;
+  author?: string;
+  thumbnail?: string;
+} | null> {
+  try {
+    const res = await fetch(
+      `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+      {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      title: data.title,
+      author: data.author_name,
+      thumbnail: data.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Fetches video metadata with multi-layer resilient fallback:
+ * 1. InnerTube (TV_EMBEDDED / iOS)
+ * 2. Ytdl (Tv / WebEmbedded / VisionOS)
+ * 3. oEmbed guaranteed title & author fallback
  */
 export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> {
+  let fallbackOembed: { title?: string; author?: string; thumbnail?: string } | null = null;
+
+  // Layer 1: InnerTube (iOS client)
   try {
     const yt = await getInnertube();
     const info = await yt.getInfo(videoId, { client: 'IOS' });
@@ -161,12 +263,22 @@ export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> 
       thumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
     }
 
+    let title = basic.title;
+    let author = basic.author;
+
+    // If title is missing or suspicious, augment via oEmbed
+    if (!title || title === 'Unknown Title') {
+      fallbackOembed = await fetchOEmbedMetadata(videoId);
+      if (fallbackOembed?.title) title = fallbackOembed.title;
+      if (fallbackOembed?.author && !author) author = fallbackOembed.author;
+    }
+
     const durationSec = basic.duration || 0;
 
     return {
       id: videoId,
-      title: basic.title || 'Unknown Title',
-      author: basic.author || 'YouTube Channel',
+      title: title || 'YouTube Track',
+      author: author || 'YouTube Creator',
       channelId: basic.channel_id,
       duration: durationSec,
       durationFormatted: formatDuration(durationSec),
@@ -178,46 +290,72 @@ export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> 
       maxAudioBitrate: maxAudioBitrate > 0 ? Math.round(maxAudioBitrate / 1000) : 320,
     };
   } catch (primaryErr) {
-    console.warn('[getVideoMetadata] Primary engine failed, switching to Ytdl fallback:', primaryErr);
+    console.warn('[getVideoMetadata] Primary engine failed, switching to resilient Ytdl:', primaryErr);
 
-    // Fallback to Ytdl
-    const { Ytdl } = await import('@distube/ytdl-core');
-    const ytdl = new Ytdl();
-    const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
+    // Layer 2: Resilient Ytdl
+    try {
+      const ytdl = await createResilientYtdl();
+      const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
 
-    const details = info.videoDetails;
-    const resolutionsSet = new Set<string>();
+      const details = info.videoDetails;
+      const resolutionsSet = new Set<string>();
 
-    for (const f of info.formats) {
-      if (f.hasVideo && f.qualityLabel) {
-        resolutionsSet.add(f.qualityLabel.replace(/60|50|hdr/gi, '').trim());
+      for (const f of info.formats) {
+        if (f.hasVideo && f.qualityLabel) {
+          resolutionsSet.add(f.qualityLabel.replace(/60|50|hdr/gi, '').trim());
+        }
       }
+
+      const availableResolutions = Array.from(resolutionsSet).sort((a, b) => {
+        const rankA = resolutionRank[a] || parseInt(a) || 0;
+        const rankB = resolutionRank[b] || parseInt(b) || 0;
+        return rankB - rankA;
+      });
+
+      const durationSec = Number(details.lengthSeconds || 0);
+      let thumbnail =
+        details.thumbnails?.[details.thumbnails.length - 1]?.url ||
+        `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+      let title = details.title;
+      let author = details.author?.name;
+
+      if (!title || title === 'Unknown Title') {
+        fallbackOembed = await fetchOEmbedMetadata(videoId);
+        if (fallbackOembed?.title) title = fallbackOembed.title;
+        if (fallbackOembed?.author && !author) author = fallbackOembed.author;
+      }
+
+      return {
+        id: videoId,
+        title: title || 'YouTube Track',
+        author: author || 'YouTube Creator',
+        channelId: details.author?.id,
+        duration: durationSec,
+        durationFormatted: formatDuration(durationSec),
+        viewCount: Number(details.viewCount || 0),
+        thumbnail,
+        description: details.description || '',
+        availableResolutions: availableResolutions.length > 0 ? availableResolutions : ['1080p', '720p', '480p'],
+        hasAudio: true,
+        maxAudioBitrate: 320,
+      };
+    } catch (ytdlErr) {
+      console.warn('[getVideoMetadata] Ytdl fallback failed, querying oEmbed guaranteed layer:', ytdlErr);
+
+      // Layer 3: Guaranteed oEmbed fallback
+      fallbackOembed = await fetchOEmbedMetadata(videoId);
+      return {
+        id: videoId,
+        title: fallbackOembed?.title || 'YouTube Video',
+        author: fallbackOembed?.author || 'YouTube Creator',
+        duration: 0,
+        durationFormatted: '0:00',
+        thumbnail: fallbackOembed?.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        availableResolutions: ['1080p', '720p', '480p'],
+        hasAudio: true,
+        maxAudioBitrate: 320,
+      };
     }
-
-    const availableResolutions = Array.from(resolutionsSet).sort((a, b) => {
-      const rankA = resolutionRank[a] || parseInt(a) || 0;
-      const rankB = resolutionRank[b] || parseInt(b) || 0;
-      return rankB - rankA;
-    });
-
-    const durationSec = Number(details.lengthSeconds || 0);
-    const thumbnail =
-      details.thumbnails?.[details.thumbnails.length - 1]?.url ||
-      `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
-    return {
-      id: videoId,
-      title: details.title || 'Unknown Title',
-      author: details.author?.name || 'YouTube Channel',
-      channelId: details.author?.id,
-      duration: durationSec,
-      durationFormatted: formatDuration(durationSec),
-      viewCount: Number(details.viewCount || 0),
-      thumbnail,
-      description: details.description || '',
-      availableResolutions: availableResolutions.length > 0 ? availableResolutions : ['1080p', '720p', '480p'],
-      hasAudio: true,
-      maxAudioBitrate: 320,
-    };
   }
 }

@@ -5,7 +5,7 @@ import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
-import { getInnertube } from './innertube';
+import { getInnertube, createResilientYtdl, getVideoMetadata } from './innertube';
 import { Preset } from './presets';
 import { progressManager } from './progress';
 import { sanitizeFilename } from './security';
@@ -49,8 +49,7 @@ async function downloadThumbnailToTemp(url: string, id: string): Promise<string 
  * Robust audio stream resolver with high-fidelity bitstream pipeline.
  */
 async function getResilientAudioStream(videoId: string, _info?: any): Promise<Readable> {
-  const { Ytdl } = await import('@distube/ytdl-core');
-  const ytdl = new Ytdl();
+  const ytdl = await createResilientYtdl();
   return ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
     quality: 'highestaudio',
   });
@@ -60,8 +59,7 @@ async function getResilientAudioStream(videoId: string, _info?: any): Promise<Re
  * Robust video stream resolver with high-definition resolution targeting.
  */
 async function getResilientVideoStream(videoId: string, _info: any, targetResolution: string): Promise<Readable> {
-  const { Ytdl } = await import('@distube/ytdl-core');
-  const ytdl = new Ytdl();
+  const ytdl = await createResilientYtdl();
   try {
     return await ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
       filter: (f) =>
@@ -95,28 +93,12 @@ export async function processAudioDownload(
     message: 'Connecting to high-fidelity audio engine...',
   });
 
-  const yt = await getInnertube();
-  let info: any = null;
-  let title = 'audio';
-  let author = 'YouTube';
-  let duration = 0;
-  let thumbUrl: string | undefined;
-
-  try {
-    info = await yt.getInfo(videoId, { client: 'IOS' });
-    title = info.basic_info.title || 'audio';
-    author = info.basic_info.author || 'YouTube';
-    duration = info.basic_info.duration || 0;
-    thumbUrl = info.basic_info.thumbnail?.[info.basic_info.thumbnail.length - 1]?.url;
-  } catch (e) {
-    const { Ytdl } = await import('@distube/ytdl-core');
-    const ytdl = new Ytdl();
-    const ytdlInfo = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
-    title = ytdlInfo.videoDetails.title || 'audio';
-    author = ytdlInfo.videoDetails.author?.name || 'YouTube';
-    duration = Number(ytdlInfo.videoDetails.lengthSeconds || 0);
-    thumbUrl = ytdlInfo.videoDetails.thumbnails?.[ytdlInfo.videoDetails.thumbnails.length - 1]?.url;
-  }
+  // Multi-tier resilient metadata acquisition
+  const metadata = await getVideoMetadata(videoId);
+  const title = metadata.title || 'audio';
+  const author = metadata.author || 'YouTube';
+  const duration = metadata.duration || 0;
+  const thumbUrl = metadata.thumbnail;
 
   const safeTitle = sanitizeFilename(title, 'audio');
   const filename = `${safeTitle}.${preset.format}`;
@@ -124,10 +106,9 @@ export async function processAudioDownload(
   // Resilient stream resolution
   let nodeInStream: Readable;
   try {
-    nodeInStream = await getResilientAudioStream(videoId, info);
+    nodeInStream = await getResilientAudioStream(videoId);
   } catch (e) {
-    const { Ytdl } = await import('@distube/ytdl-core');
-    const ytdl = new Ytdl();
+    const ytdl = await createResilientYtdl();
     nodeInStream = await ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
       quality: 'highestaudio',
     });
@@ -342,22 +323,9 @@ export async function processVideoMuxDownload(
       message: `Allocating pipeline for ${preset.resolution || 'HD'} stream...`,
     });
 
-    const yt = await getInnertube();
-    let info: any = null;
-    let title = 'video';
-    let duration = 0;
-
-    try {
-      info = await yt.getInfo(videoId, { client: 'IOS' });
-      title = info.basic_info.title || 'video';
-      duration = info.basic_info.duration || 0;
-    } catch (e) {
-      const { Ytdl } = await import('@distube/ytdl-core');
-      const ytdl = new Ytdl();
-      const ytdlInfo = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
-      title = ytdlInfo.videoDetails.title || 'video';
-      duration = Number(ytdlInfo.videoDetails.lengthSeconds || 0);
-    }
+    const metadata = await getVideoMetadata(videoId);
+    const title = metadata.title || 'video';
+    const duration = metadata.duration || 0;
 
     const safeTitle = sanitizeFilename(title, 'video');
     const filename = `${safeTitle}.mp4`;
@@ -372,7 +340,7 @@ export async function processVideoMuxDownload(
       message: `Downloading ${targetResolution} video stream...`,
     });
 
-    const nodeVideoStream = await getResilientVideoStream(videoId, info, targetResolution);
+    const nodeVideoStream = await getResilientVideoStream(videoId, undefined, targetResolution);
     const videoWriteStream = fs.createWriteStream(tempVideoPath);
 
     await new Promise<void>((resolve, reject) => {
@@ -391,7 +359,7 @@ export async function processVideoMuxDownload(
       message: 'Downloading studio master audio track...',
     });
 
-    const nodeAudioStream = await getResilientAudioStream(videoId, info);
+    const nodeAudioStream = await getResilientAudioStream(videoId);
     const audioWriteStream = fs.createWriteStream(tempAudioPath);
 
     await new Promise<void>((resolve, reject) => {
