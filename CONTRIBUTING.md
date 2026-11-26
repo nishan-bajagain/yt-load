@@ -15,17 +15,21 @@ Thank you for your interest in contributing to **YT-LOAD**! We celebrate open so
 ## 🛠️ Development Setup
 
 ```bash
-# 1. Fork and clone the repository
+# 1. Fork the repository on GitHub: https://github.com/nishan-bajagain/yt-load
+# 2. Clone your fork locally
 git clone https://github.com/<your-username>/yt-load.git
 cd yt-load
 
-# 2. Install dependencies
+# 3. Add upstream remote
+git remote add upstream https://github.com/nishan-bajagain/yt-load.git
+
+# 4. Install dependencies
 npm install
 
-# 3. Start development server
+# 5. Start development server
 npm run dev
 
-# 4. Open http://localhost:3000
+# 6. Open http://localhost:3000 in your browser
 ```
 
 ---
@@ -72,13 +76,12 @@ git push origin feat/add-wav-preset
 
 ## 🎨 Modifying UI & Theme
 
-The UI uses a **Hacktoberfest Neo-Brutalist** aesthetic defined in `src/app/globals.css`:
-- Canvas: `#233531`
-- Surface: `#2E433E`
-- Borders: `#4A635D` (sharp, 1px solid, 2px-4px border radius)
-- Coral Accent: `#F27D72`
-- Amber Highlight: `#F5B041`
-- Shadows: Hard offset `shadow-[3px_3px_0px_#1A2624]` (no blurred glassmorphism)
+The UI uses a **Modern Dark SaaS** aesthetic defined in `src/app/globals.css`:
+- Canvas Background: Deep Dark Slate (`#090A0E`)
+- Card Surface: Elevated Graphite (`#12141A`)
+- Borders: Subtle translucent border (`border-white/10`)
+- Accent Highlight: Electric Amber / Gold (`#FBBF24` / `#F59E0B`)
+- Clean, accessible components with live progress indicators, interactive FAQ accordion, and Bitcoin donation modal.
 
 ---
 

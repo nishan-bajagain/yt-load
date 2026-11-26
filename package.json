@@ -1,7 +1,15 @@
 {
   "name": "yt-load",
   "version": "1.0.0",
-  "description": "",
+  "description": "Zero-ad, high-fidelity YouTube & YouTube Music downloader and audio/video transcoder built with Next.js, TypeScript, and FFmpeg.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nishan-bajagain/yt-load.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nishan-bajagain/yt-load/issues"
+  },
+  "homepage": "https://github.com/nishan-bajagain/yt-load#readme",
   "main": "index.js",
   "scripts": {
     "dev": "next dev",

@@ -250,7 +250,7 @@ export default function Home() {
             </button>
 
             <a
-              href="https://github.com"
+              href="https://github.com/nishan-bajagain/yt-load"
               target="_blank"
               rel="noopener noreferrer"
               className="px-3.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-semibold flex items-center space-x-2 transition-all hover:border-amber-400/40"
@@ -712,7 +712,7 @@ export default function Home() {
               Self-Host
             </button>
             <a
-              href="https://github.com"
+              href="https://github.com/nishan-bajagain/yt-load"
               target="_blank"
               rel="noopener noreferrer"
               className="hover:text-amber-400 transition-colors"

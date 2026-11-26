@@ -46,7 +46,7 @@ The UI is built strictly around a high-contrast developer terminal aesthetic:
 
 ### 1. Clone & Install
 ```bash
-git clone https://github.com/nishan/yt-load.git
+git clone https://github.com/nishan-bajagain/yt-load.git
 cd yt-load
 npm install
 ```
@@ -73,7 +73,7 @@ docker run -d \
   --name yt-load \
   -p 3000:3000 \
   --restart always \
-  ghcr.io/nishan/yt-load:latest
+  ghcr.io/nishan-bajagain/yt-load:latest
 ```
 
 ### Docker Compose
