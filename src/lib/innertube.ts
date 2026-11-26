@@ -16,6 +16,31 @@ Platform.shim.eval = (data: any, env: any) => {
 let innertubeInstance: Innertube | null = null;
 let innertubePromise: Promise<Innertube> | null = null;
 
+// Singleton PoToken provider — shared across all requests in the same Node.js process.
+// Works in pure Node without a browser. Runs BotGuard in a worker thread.
+// On Vercel/serverless, each cold start creates one provider; it stays alive for the
+// lifetime of the lambda warm instance (usually several minutes).
+let poTokenProviderPromise: Promise<any> | null = null;
+
+async function getPoTokenProvider(): Promise<any | null> {
+  if (poTokenProviderPromise) return poTokenProviderPromise;
+
+  poTokenProviderPromise = (async () => {
+    try {
+      const { createPoTokenProvider } = await import('@distube/ytdl-core');
+      const provider = await createPoTokenProvider({ timeoutMs: 20_000 });
+      console.log('[PoToken] BotGuard worker ready — running without cookies');
+      return provider;
+    } catch (e) {
+      console.warn('[PoToken] BotGuard worker failed to initialise (non-fatal):', (e as Error).message);
+      poTokenProviderPromise = null; // allow retry on next request
+      return null;
+    }
+  })();
+
+  return poTokenProviderPromise;
+}
+
 /**
  * Reads YouTube cookies from environment variables or local cookies.txt file.
  * Vital for production cloud deployments (Vercel, AWS, Railway, Docker) where YouTube checks authentication.
@@ -60,15 +85,22 @@ export function getYouTubeProxyFetch(): typeof fetch | undefined {
 
 /**
  * Factory for creating a production-hardened Ytdl instance.
- * Explicitly forces TV and Embedded clients to prevent the "Could not prepare player" error on datacenter IPs.
+ *
+ * Priority order (best to worst for cloud/Vercel without cookies):
+ *   1. Tv + WebEmbedded + VisionOS clients  — bypass player JS deciphering entirely
+ *   2. PoToken (BotGuard worker thread)      — proves the request is from a real client
+ *   3. Cookie (optional env var)             — signed-in session, most privileged
+ *   4. Proxy (optional env var)              — residential IP routing
  */
 export async function createResilientYtdl() {
   const { Ytdl, Client } = await import('@distube/ytdl-core');
   const cookie = getYouTubeCookie();
   const proxyFetch = getYouTubeProxyFetch();
+  const poProvider = await getPoTokenProvider();
 
   return new Ytdl({
     clients: [Client.Tv, Client.WebEmbedded, Client.VisionOS],
+    ...(poProvider ? { getPoToken: poProvider } : {}),
     ...(cookie ? { cookie } : {}),
     ...(proxyFetch ? { fetch: proxyFetch } : {}),
   });

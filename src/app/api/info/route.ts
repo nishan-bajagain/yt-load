@@ -4,6 +4,8 @@ import { AUDIO_PRESETS, VIDEO_PRESETS, estimateFileSize } from '@/lib/presets';
 import { checkRateLimit } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
+// Vercel: allow up to 30s for metadata resolution (BotGuard init + InnerTube).
+export const maxDuration = 30;
 
 export async function POST(req: NextRequest) {
   try {

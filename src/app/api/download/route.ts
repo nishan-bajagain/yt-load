@@ -6,6 +6,8 @@ import { processAudioDownload, processVideoMuxDownload } from '@/lib/downloader'
 import { checkRateLimit } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
+// Vercel: allow up to 300s on Pro plan (60s on Hobby) for large video muxing operations.
+export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
   try {
