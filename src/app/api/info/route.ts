@@ -5,8 +5,9 @@ import { checkRateLimit } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-// Vercel: allow up to 30s for metadata resolution (BotGuard init + InnerTube).
-export const maxDuration = 30;
+// Cookie-free client rotation can require several upstream attempts on a cold
+// Vercel function. Keep enough budget for the resolver to finish cleanly.
+export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
   try {

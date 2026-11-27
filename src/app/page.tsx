@@ -118,17 +118,32 @@ export default function Home() {
     setErrorMessage(null);
 
     try {
-      const res = await fetch('/api/info', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: rawUrl.trim() }),
-      });
+      let data: any = null;
+      let lastError: Error | null = null;
 
-      const data = await res.json();
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const res = await fetch('/api/info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: rawUrl.trim() }),
+          cache: 'no-store',
+        });
 
-      if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to analyze video stream.');
+        try {
+          data = await res.json();
+        } catch {
+          data = null;
+        }
+
+        const temporaryFailure = res.status >= 500 || data?.data?.isPlayable === false;
+        if (res.ok && data?.success && !temporaryFailure) break;
+
+        lastError = new Error(data?.error || 'YouTube did not return a playable stream yet.');
+        if (!temporaryFailure || attempt === 2) throw lastError;
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
       }
+
+      if (!data?.success) throw lastError || new Error('Failed to analyze video stream.');
 
       setMetadata(data.data);
 

@@ -110,7 +110,7 @@ export function getYouTubeProxyFetch(): typeof fetch | undefined {
  * Factory for creating a production-hardened Ytdl instance.
  *
  * Priority order (best to worst for cloud/Vercel without cookies):
- *   1. Tv + WebEmbedded + VisionOS clients  — bypass player JS deciphering entirely
+ *   1. VisionOS + Mweb + WebEmbedded + TV clients — cookie-free client rotation
  *   2. PoToken (BotGuard worker thread)      — proves the request is from a real client
  *   3. Cookie (optional env var)             — signed-in session, most privileged
  *   4. Proxy (optional env var)              — residential IP routing
@@ -126,7 +126,7 @@ export async function createResilientYtdl(options: { withCookie?: boolean; witho
   return new Ytdl({
     // VisionOS is the most reliable cookie-free client. Keep the embedded/TV
     // clients as fallbacks for videos that do not expose a VisionOS format.
-    clients: [Client.VisionOS, Client.WebEmbedded, Client.Tv],
+    clients: [Client.VisionOS, Client.Mweb, Client.WebEmbedded, Client.Tv],
     ...(poProvider ? { getPoToken: poProvider } : {}),
     ...(cookie ? { cookie } : {}),
     ...(proxyFetch ? { fetch: proxyFetch } : {}),
