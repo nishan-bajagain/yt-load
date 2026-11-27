@@ -5,7 +5,7 @@ import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
-import { getInnertube, createResilientYtdl, getVideoMetadata } from './innertube';
+import { createResilientYtdl, getVideoMetadata, getYouTubeCookie } from './innertube';
 import { Preset } from './presets';
 import { progressManager } from './progress';
 import { sanitizeFilename } from './security';
@@ -36,7 +36,7 @@ export interface DownloadResult {
 async function downloadThumbnailToTemp(url: string, id: string): Promise<string | null> {
   if (!url) return null;
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
     if (!res.ok) return null;
     const arrayBuffer = await res.arrayBuffer();
     const tempPath = path.join(os.tmpdir(), `yt-load-cover-${id}.jpg`);
@@ -51,11 +51,20 @@ async function downloadThumbnailToTemp(url: string, id: string): Promise<string 
 /**
  * Robust audio stream resolver with high-fidelity bitstream pipeline.
  */
-async function getResilientAudioStream(videoId: string, _info?: any): Promise<Readable> {
-  const ytdl = await createResilientYtdl();
-  return ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
-    quality: 'highestaudio',
-  });
+async function getResilientAudioStream(videoId: string, abortSignal?: AbortSignal): Promise<Readable> {
+  const downloadOptions = { quality: 'highestaudio' as const, signal: abortSignal };
+  try {
+    const ytdl = await createResilientYtdl();
+    return ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, downloadOptions);
+  } catch (error) {
+    // Public/cookie-free clients are primary. Only use a configured cookie as
+    // a last resort for restricted videos.
+    if (getYouTubeCookie()) {
+      const ytdl = await createResilientYtdl({ withCookie: true });
+      return ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, downloadOptions);
+    }
+    throw error;
+  }
 }
 
 function estimateAudioBytes(preset: Preset, durationSeconds: number): number | undefined {
@@ -67,17 +76,43 @@ function estimateAudioBytes(preset: Preset, durationSeconds: number): number | u
 /**
  * Robust video stream resolver with high-definition resolution targeting.
  */
-async function getResilientVideoStream(videoId: string, _info: any, targetResolution: string): Promise<Readable> {
-  const ytdl = await createResilientYtdl();
+async function getResilientVideoStream(videoId: string, targetResolution: string, abortSignal?: AbortSignal): Promise<Readable> {
+  let ytdl;
+  try {
+    ytdl = await createResilientYtdl();
+  } catch (error) {
+    if (!getYouTubeCookie()) throw error;
+    ytdl = await createResilientYtdl({ withCookie: true });
+  }
+  const downloadOptions = { signal: abortSignal };
   try {
     return await ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
       filter: (f) =>
         f.hasVideo && !f.hasAudio && Boolean(f.qualityLabel && f.qualityLabel.includes(targetResolution)),
+      ...downloadOptions,
     });
   } catch (e) {
-    return await ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
-      quality: 'highestvideo',
-    });
+    try {
+      return await ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
+        quality: 'highestvideo',
+        ...downloadOptions,
+      });
+    } catch (secondError) {
+      if (getYouTubeCookie()) {
+        const cookieYtdl = await createResilientYtdl({ withCookie: true });
+        return cookieYtdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
+          quality: 'highestvideo',
+          ...downloadOptions,
+        });
+      }
+      throw secondError;
+    }
+  }
+}
+
+function abortIfNeeded(abortSignal?: AbortSignal): void {
+  if (abortSignal?.aborted) {
+    throw new Error('Download cancelled by the client.');
   }
 }
 
@@ -115,12 +150,10 @@ export async function processAudioDownload(
   // Resilient stream resolution
   let nodeInStream: Readable;
   try {
-    nodeInStream = await getResilientAudioStream(videoId);
+    nodeInStream = await getResilientAudioStream(videoId, abortSignal);
   } catch (e) {
-    const ytdl = await createResilientYtdl();
-    nodeInStream = await ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
-      quality: 'highestaudio',
-    });
+    abortIfNeeded(abortSignal);
+    throw e;
   }
 
   // Direct OPUS passthrough
@@ -351,7 +384,7 @@ export async function processVideoMuxDownload(
       message: `Downloading ${targetResolution} video stream...`,
     });
 
-    const nodeVideoStream = await getResilientVideoStream(videoId, undefined, targetResolution);
+    const nodeVideoStream = await getResilientVideoStream(videoId, targetResolution, abortSignal);
     const videoWriteStream = fs.createWriteStream(tempVideoPath);
 
     await new Promise<void>((resolve, reject) => {
@@ -370,7 +403,7 @@ export async function processVideoMuxDownload(
       message: 'Downloading studio master audio track...',
     });
 
-    const nodeAudioStream = await getResilientAudioStream(videoId);
+    const nodeAudioStream = await getResilientAudioStream(videoId, abortSignal);
     const audioWriteStream = fs.createWriteStream(tempAudioPath);
 
     await new Promise<void>((resolve, reject) => {

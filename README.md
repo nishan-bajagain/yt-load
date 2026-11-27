@@ -67,9 +67,9 @@ npm run start
 
 ## ☁️ Production / Cloud Deployment Fix
 
-> **If you get "Unknown Title" or "Could not play" errors after deploying to a cloud server** (Vercel, Railway, Render, AWS, etc.) — this is caused by YouTube blocking unauthenticated requests from datacenter IPs.
+> **Public videos do not require cookies.** YT-LOAD always tries cookie-free clients first. Cloud providers can still be rate-limited or challenged by YouTube, so a particular public video may need a retry, a different region, or an explicit proxy.
 
-YT-LOAD includes a **3-layer resilient fallback** (InnerTube TV_EMBEDDED → Ytdl with TV/VisionOS clients → oEmbed) that handles most cases automatically. For maximum reliability, provide a YouTube session cookie:
+YT-LOAD includes a **cookie-free resilient fallback** (InnerTube → VisionOS/embedded/TV clients → oEmbed). A YouTube session cookie is optional and is only attempted as a last resort for age-restricted or otherwise restricted videos:
 
 ### Option A: Environment Variable (Recommended)
 ```bash

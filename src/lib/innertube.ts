@@ -22,13 +22,13 @@ let innertubePromise: Promise<Innertube> | null = null;
 // lifetime of the lambda warm instance (usually several minutes).
 let poTokenProviderPromise: Promise<any> | null = null;
 
-async function getPoTokenProvider(): Promise<any | null> {
+async function getPoTokenProvider(proxyFetch?: typeof fetch): Promise<any | null> {
   if (poTokenProviderPromise) return poTokenProviderPromise;
 
   poTokenProviderPromise = (async () => {
     try {
       const { createPoTokenProvider } = await import('@distube/ytdl-core');
-      const provider = await createPoTokenProvider({ timeoutMs: 20_000 });
+      const provider = await createPoTokenProvider({ fetch: proxyFetch, timeoutMs: 20_000 });
       console.log('[PoToken] BotGuard worker ready — running without cookies');
       return provider;
     } catch (e) {
@@ -46,22 +46,42 @@ async function getPoTokenProvider(): Promise<any | null> {
  * Vital for production cloud deployments (Vercel, AWS, Railway, Docker) where YouTube checks authentication.
  */
 export function getYouTubeCookie(): string | undefined {
-  if (process.env.YOUTUBE_COOKIE && process.env.YOUTUBE_COOKIE.trim()) {
-    return process.env.YOUTUBE_COOKIE.trim();
-  }
-  if (process.env.YT_COOKIE && process.env.YT_COOKIE.trim()) {
-    return process.env.YT_COOKIE.trim();
+  const configuredCookie = process.env.YOUTUBE_COOKIE || process.env.YT_COOKIE;
+  if (configuredCookie?.trim()) {
+    return normalizeCookie(configuredCookie);
   }
   try {
     const cookiePath = path.resolve(process.cwd(), 'cookies.txt');
     if (fs.existsSync(cookiePath)) {
       const content = fs.readFileSync(cookiePath, 'utf8').trim();
-      if (content) return content;
+      if (content) return normalizeCookie(content);
     }
   } catch (e) {
     // ignore
   }
   return undefined;
+}
+
+/** Converts common browser/Netscape exports into the Cookie header format. */
+function normalizeCookie(input: string): string | undefined {
+  let value = input.trim();
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    value = value.slice(1, -1).trim();
+  }
+  value = value.replace(/^Cookie:\s*/i, '').trim();
+  if (!value) return undefined;
+
+  if (value.includes('\n') || value.includes('\t')) {
+    const pairs = value
+      .split(/\r?\n/)
+      .filter((line) => line && !line.startsWith('#'))
+      .map((line) => line.split('\t'))
+      .filter((fields) => fields.length >= 7 && fields[5] && fields[6])
+      .map((fields) => `${fields[5]}=${fields[6]}`);
+    if (pairs.length > 0) return pairs.join('; ');
+  }
+
+  return value;
 }
 
 /**
@@ -95,11 +115,13 @@ export function getYouTubeProxyFetch(): typeof fetch | undefined {
  *   3. Cookie (optional env var)             — signed-in session, most privileged
  *   4. Proxy (optional env var)              — residential IP routing
  */
-export async function createResilientYtdl() {
+export async function createResilientYtdl(options: { withCookie?: boolean; withoutCookie?: boolean } = {}) {
   const { Ytdl, Client } = await import('@distube/ytdl-core');
-  const cookie = getYouTubeCookie();
+  // Cookie-free is the default. A cookie is only sent when a caller explicitly
+  // opts into the restricted-video fallback path.
+  const cookie = options.withCookie && !options.withoutCookie ? getYouTubeCookie() : undefined;
   const proxyFetch = getYouTubeProxyFetch();
-  const poProvider = await getPoTokenProvider();
+  const poProvider = await getPoTokenProvider(proxyFetch);
 
   return new Ytdl({
     // VisionOS is the most reliable cookie-free client. Keep the embedded/TV
@@ -127,7 +149,6 @@ export async function getInnertube(): Promise<Innertube> {
 
   innertubePromise = (async () => {
     try {
-      const cookie = getYouTubeCookie();
       const proxyFetch = getYouTubeProxyFetch();
 
       const client = await Innertube.create({
@@ -135,7 +156,6 @@ export async function getInnertube(): Promise<Innertube> {
         generate_session_locally: true,
         lang: 'en',
         location: 'US',
-        ...(cookie ? { cookie } : {}),
         ...(proxyFetch ? { fetch: proxyFetch as any } : {}),
       });
       innertubeInstance = client;
@@ -240,6 +260,7 @@ export async function fetchOEmbedMetadata(videoId: string): Promise<{
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
+        signal: AbortSignal.timeout(12_000),
       }
     );
     if (!res.ok) return null;
@@ -332,9 +353,13 @@ export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> 
   } catch (primaryErr) {
     console.warn('[getVideoMetadata] Primary engine failed, switching to resilient Ytdl:', primaryErr);
 
-    // Layer 2: Resilient Ytdl
-    try {
-      const ytdl = await createResilientYtdl();
+    // Layer 2: Resilient Ytdl. If a configured cookie is stale, retry the
+    // same public-video lookup without it before falling back to oEmbed.
+    let ytdlErr: unknown = null;
+    const ytdlModes = getYouTubeCookie() ? [false, true] : [false];
+    for (const withoutCookie of ytdlModes) {
+      try {
+      const ytdl = await createResilientYtdl({ withCookie: !withoutCookie, withoutCookie });
       const info = await ytdl.getInfo(`https://www.youtube.com/watch?v=${videoId}`);
 
       const details = info.videoDetails;
@@ -380,7 +405,12 @@ export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> 
         hasAudio: true,
         maxAudioBitrate: 320,
       };
-    } catch (ytdlErr) {
+      } catch (error) {
+        ytdlErr = error;
+      }
+    }
+
+    {
       console.warn('[getVideoMetadata] Ytdl fallback failed, querying oEmbed guaranteed layer:', ytdlErr);
 
       // Layer 3: Guaranteed oEmbed fallback

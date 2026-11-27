@@ -50,6 +50,37 @@ interface FullMetadataResponse extends VideoMetadata {
   };
 }
 
+async function readServerError(response: Response): Promise<string> {
+  const contentType = response.headers.get('content-type') || '';
+  const raw = await response.text();
+
+  if (contentType.includes('application/json')) {
+    try {
+      const payload = JSON.parse(raw);
+      if (typeof payload.error === 'string') return payload.error;
+      if (typeof payload.message === 'string') return payload.message;
+    } catch {
+      // Fall through to the safe status-based message.
+    }
+  }
+
+  // Vercel/Next can return a complete HTML 500/504 document when the function
+  // crashes or times out. Never render that implementation detail in the UI.
+  if (/<(?:!doctype|html|head|body)\b/i.test(raw) || contentType.includes('text/html')) {
+    if (response.status === 504 || response.status === 524) {
+      return 'The hosting function timed out while processing this media. Try a shorter video or use a self-hosted deployment.';
+    }
+    if (response.status >= 500) {
+      return 'The hosting function failed before returning a media error. Check the Vercel function logs, then try again with a public video.';
+    }
+  }
+
+  const message = raw.replace(/^Download error:\s*/i, '').trim();
+  return message.length > 0 && message.length < 500
+    ? message
+    : `Download failed with HTTP ${response.status}.`;
+}
+
 export default function Home() {
   const [urlInput, setUrlInput] = useState('');
   const [isLoadingInfo, setIsLoadingInfo] = useState(false);
@@ -166,7 +197,7 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const message = (await response.text()).replace(/^Download error:\s*/i, '').trim();
+        const message = await readServerError(response);
         throw new Error(message || `Download failed with HTTP ${response.status}.`);
       }
 

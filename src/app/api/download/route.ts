@@ -11,6 +11,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
+  const requestId = req.headers.get('x-request-id') || crypto.randomUUID();
   try {
     const ip = req.headers.get('x-forwarded-for')?.split(',')[0].trim() || '127.0.0.1';
     const rate = checkRateLimit(ip);
@@ -71,7 +72,7 @@ export async function GET(req: NextRequest) {
       headers,
     });
   } catch (err: any) {
-    console.error('API /download error:', err);
+    console.error(`[API /download error ${requestId}]`, err);
     const message = err?.message || 'An unexpected error occurred during processing.';
     const status = /rate limit/i.test(message) ? 429 : 502;
     return new NextResponse(
@@ -81,6 +82,7 @@ export async function GET(req: NextRequest) {
         headers: {
           'Content-Type': 'text/plain; charset=utf-8',
           'Cache-Control': 'no-store',
+          'X-Request-Id': requestId,
         },
       }
     );
