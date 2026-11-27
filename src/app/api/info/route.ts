@@ -43,7 +43,14 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const metadata = await getVideoMetadata(videoId);
+    let metadata = await getVideoMetadata(videoId);
+    // oEmbed can identify a video while YouTube temporarily withholds its
+    // streaming metadata. Retry the full resolver twice before exposing a
+    // metadata-only result to the download UI.
+    for (let attempt = 0; attempt < 2 && !metadata.isPlayable; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+      metadata = await getVideoMetadata(videoId);
+    }
 
     // Map audio presets with estimated file sizes
     const audioPresets = AUDIO_PRESETS.map((p) => ({

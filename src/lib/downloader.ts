@@ -48,23 +48,80 @@ async function downloadThumbnailToTemp(url: string, id: string): Promise<string 
   }
 }
 
+const STREAM_READY_TIMEOUT_MS = 25_000;
+
+/** Wait for the upstream stream to become readable before handing it to FFmpeg. */
+function waitForStreamReady(stream: Readable, abortSignal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error('YouTube did not start the media stream in time.')), STREAM_READY_TIMEOUT_MS);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      stream.removeListener('readable', onReadable);
+      stream.removeListener('error', onError);
+      stream.removeListener('end', onEnd);
+      abortSignal?.removeEventListener('abort', onAbort);
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const onReadable = () => finish();
+    const onError = (error: Error) => finish(error);
+    const onEnd = () => finish(new Error('YouTube closed the media stream before sending data.'));
+    const onAbort = () => finish(new Error('Download cancelled by the client.'));
+
+    stream.once('readable', onReadable);
+    stream.once('error', onError);
+    stream.once('end', onEnd);
+    abortSignal?.addEventListener('abort', onAbort, { once: true });
+
+    if (stream.readableLength > 0) onReadable();
+  });
+}
+
+async function openReadyStream(factory: () => Readable, abortSignal?: AbortSignal): Promise<Readable> {
+  const stream = factory();
+  try {
+    await waitForStreamReady(stream, abortSignal);
+    return stream;
+  } catch (error) {
+    stream.destroy();
+    throw error;
+  }
+}
+
 /**
  * Robust audio stream resolver with high-fidelity bitstream pipeline.
  */
 async function getResilientAudioStream(videoId: string, abortSignal?: AbortSignal): Promise<Readable> {
   const downloadOptions = { quality: 'highestaudio' as const, signal: abortSignal };
-  try {
-    const ytdl = await createResilientYtdl();
-    return ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, downloadOptions);
-  } catch (error) {
-    // Public/cookie-free clients are primary. Only use a configured cookie as
-    // a last resort for restricted videos.
-    if (getYouTubeCookie()) {
+  const factories: Array<() => Promise<Readable>> = [
+    async () => {
+      const ytdl = await createResilientYtdl();
+      return openReadyStream(() => ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, downloadOptions), abortSignal);
+    },
+  ];
+  if (getYouTubeCookie()) {
+    factories.push(async () => {
       const ytdl = await createResilientYtdl({ withCookie: true });
-      return ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, downloadOptions);
-    }
-    throw error;
+      return openReadyStream(() => ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, downloadOptions), abortSignal);
+    });
   }
+
+  let lastError: unknown = new Error('No media stream strategy was available.');
+  for (const factory of factories) {
+    try {
+      return await factory();
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 function estimateAudioBytes(preset: Preset, durationSeconds: number): number | undefined {
@@ -77,37 +134,37 @@ function estimateAudioBytes(preset: Preset, durationSeconds: number): number | u
  * Robust video stream resolver with high-definition resolution targeting.
  */
 async function getResilientVideoStream(videoId: string, targetResolution: string, abortSignal?: AbortSignal): Promise<Readable> {
-  let ytdl;
-  try {
-    ytdl = await createResilientYtdl();
-  } catch (error) {
-    if (!getYouTubeCookie()) throw error;
-    ytdl = await createResilientYtdl({ withCookie: true });
-  }
   const downloadOptions = { signal: abortSignal };
-  try {
-    return await ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
-      filter: (f) =>
-        f.hasVideo && !f.hasAudio && Boolean(f.qualityLabel && f.qualityLabel.includes(targetResolution)),
-      ...downloadOptions,
-    });
-  } catch (e) {
+  const clients = [false, ...(getYouTubeCookie() ? [true] : [])];
+  let lastError: unknown = new Error('No video stream strategy was available.');
+
+  for (const withCookie of clients) {
     try {
-      return await ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
-        quality: 'highestvideo',
-        ...downloadOptions,
-      });
-    } catch (secondError) {
-      if (getYouTubeCookie()) {
-        const cookieYtdl = await createResilientYtdl({ withCookie: true });
-        return cookieYtdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
-          quality: 'highestvideo',
-          ...downloadOptions,
-        });
+      const ytdl = await createResilientYtdl(withCookie ? { withCookie: true } : {});
+      try {
+        return await openReadyStream(
+          () => ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
+            filter: (f) =>
+              f.hasVideo && !f.hasAudio && Boolean(f.qualityLabel && f.qualityLabel.includes(targetResolution)),
+            ...downloadOptions,
+          }),
+          abortSignal
+        );
+      } catch (targetError) {
+        lastError = targetError;
+        return await openReadyStream(
+          () => ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
+            quality: 'highestvideo',
+            ...downloadOptions,
+          }),
+          abortSignal
+        );
       }
-      throw secondError;
+    } catch (error) {
+      lastError = error;
     }
   }
+  throw lastError;
 }
 
 function abortIfNeeded(abortSignal?: AbortSignal): void {

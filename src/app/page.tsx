@@ -132,6 +132,10 @@ export default function Home() {
 
       setMetadata(data.data);
 
+      if (data.data.isPlayable === false) {
+        setErrorMessage('YouTube returned the title but not a playable stream yet. Please retry once; no cookie is required for public videos.');
+      }
+
       if (activeTab === 'audio') {
         setSelectedPresetId(data.data.presets.audio[0]?.id || 'mp3-320');
       } else {
@@ -191,10 +195,35 @@ export default function Home() {
     )}&preset=${encodeURIComponent(selectedPreset.id)}&jobId=${encodeURIComponent(jobId)}`;
 
     try {
-      const response = await fetch(downloadEndpoint, {
-        signal: abortController.signal,
-        cache: 'no-store',
-      });
+      let response: Response | null = null;
+      let lastFetchError: unknown = null;
+      const retryableStatuses = new Set([500, 502, 503, 504, 524]);
+
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          response = await fetch(downloadEndpoint, {
+            signal: abortController.signal,
+            cache: 'no-store',
+          });
+          if (response.ok || !retryableStatuses.has(response.status) || attempt === 2) break;
+          await response.body?.cancel();
+        } catch (error) {
+          lastFetchError = error;
+          if (attempt === 2 || (error as Error)?.name === 'AbortError') throw error;
+        }
+
+        const waitMs = 500 * (attempt + 1);
+        setDownloadProgress((current) => ({
+          jobId,
+          status: 'initializing',
+          percent: current?.percent || 5,
+          phase: 'Retrying Media Connection',
+          message: `YouTube returned a temporary error. Retrying automatically (${attempt + 2}/3)...`,
+        }));
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+
+      if (!response) throw lastFetchError || new Error('The media server did not respond.');
 
       if (!response.ok) {
         const message = await readServerError(response);

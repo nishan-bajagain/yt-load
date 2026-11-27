@@ -214,6 +214,9 @@ export interface VideoMetadata {
   availableResolutions: string[];
   hasAudio: boolean;
   maxAudioBitrate: number;
+  /** True when the response included enough data to start a media download. */
+  isPlayable: boolean;
+  metadataSource: 'innertube' | 'ytdl' | 'oembed';
 }
 
 /**
@@ -284,10 +287,21 @@ export async function fetchOEmbedMetadata(videoId: string): Promise<{
 export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> {
   let fallbackOembed: { title?: string; author?: string; thumbnail?: string } | null = null;
 
-  // Layer 1: InnerTube (iOS client)
+  // Layer 1: try several cookie-free InnerTube clients. One client can be
+  // challenged while another still returns complete streaming metadata.
   try {
     const yt = await getInnertube();
-    const info = await yt.getInfo(videoId, { client: 'IOS' });
+    let info;
+    let primaryErr: unknown = null;
+    for (const client of ['TV_EMBEDDED', 'WEB_EMBEDDED', 'IOS'] as const) {
+      try {
+        info = await yt.getInfo(videoId, { client });
+        break;
+      } catch (error) {
+        primaryErr = error;
+      }
+    }
+    if (!info) throw primaryErr || new Error('All cookie-free InnerTube clients failed.');
 
     const basic = info.basic_info;
     const adaptive = info.streaming_data?.adaptive_formats || [];
@@ -349,6 +363,8 @@ export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> 
       availableResolutions: availableResolutions.length > 0 ? availableResolutions : ['1080p', '720p', '480p', '360p'],
       hasAudio: true,
       maxAudioBitrate: maxAudioBitrate > 0 ? Math.round(maxAudioBitrate / 1000) : 320,
+      isPlayable: durationSec > 0,
+      metadataSource: 'innertube',
     };
   } catch (primaryErr) {
     console.warn('[getVideoMetadata] Primary engine failed, switching to resilient Ytdl:', primaryErr);
@@ -404,6 +420,8 @@ export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> 
         availableResolutions: availableResolutions.length > 0 ? availableResolutions : ['1080p', '720p', '480p'],
         hasAudio: true,
         maxAudioBitrate: 320,
+        isPlayable: durationSec > 0,
+        metadataSource: 'ytdl',
       };
       } catch (error) {
         ytdlErr = error;
@@ -425,6 +443,8 @@ export async function getVideoMetadata(videoId: string): Promise<VideoMetadata> 
         availableResolutions: ['1080p', '720p', '480p'],
         hasAudio: true,
         maxAudioBitrate: 320,
+        isPlayable: false,
+        metadataSource: 'oembed',
       };
     }
   }
