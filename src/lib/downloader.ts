@@ -24,6 +24,9 @@ export interface DownloadResult {
   stream: Readable;
   filename: string;
   mimeType: string;
+  /** Exact size when known (muxed files), otherwise a bitrate-based estimate. */
+  contentLength?: number;
+  estimatedBytes?: number;
   cleanup?: () => Promise<void>;
 }
 
@@ -53,6 +56,12 @@ async function getResilientAudioStream(videoId: string, _info?: any): Promise<Re
   return ytdl.download(`https://www.youtube.com/watch?v=${videoId}`, {
     quality: 'highestaudio',
   });
+}
+
+function estimateAudioBytes(preset: Preset, durationSeconds: number): number | undefined {
+  if (!durationSeconds || durationSeconds <= 0) return undefined;
+  const bitrateKbps = preset.bitrate || (preset.format === 'flac' ? 850 : 320);
+  return Math.ceil((bitrateKbps * 1000 * durationSeconds) / 8);
 }
 
 /**
@@ -155,6 +164,7 @@ export async function processAudioDownload(
       stream: pass,
       filename,
       mimeType: preset.mimeType,
+      estimatedBytes: estimateAudioBytes(preset, duration),
     };
   }
 
@@ -282,6 +292,7 @@ export async function processAudioDownload(
     stream: outStream,
     filename,
     mimeType: preset.mimeType,
+    estimatedBytes: estimateAudioBytes(preset, duration),
     cleanup,
   };
 }
@@ -449,10 +460,13 @@ export async function processVideoMuxDownload(
     fileReadStream.on('close', cleanup);
     fileReadStream.on('error', cleanup);
 
+    const outputStats = await fs.promises.stat(tempOutputPath);
+
     return {
       stream: fileReadStream,
       filename,
       mimeType: preset.mimeType,
+      contentLength: outputStats.size,
       cleanup,
     };
   } catch (err) {

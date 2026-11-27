@@ -6,6 +6,7 @@ import { processAudioDownload, processVideoMuxDownload } from '@/lib/downloader'
 import { checkRateLimit } from '@/lib/security';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 // Vercel: allow up to 300s on Pro plan (60s on Hobby) for large video muxing operations.
 export const maxDuration = 300;
 
@@ -57,6 +58,11 @@ export async function GET(req: NextRequest) {
       `attachment; filename="${safeAsciiFilename}"; filename*=UTF-8''${encodedFilename}`
     );
     headers.set('Content-Type', result.mimeType || 'application/octet-stream');
+    if (result.contentLength !== undefined) {
+      headers.set('Content-Length', String(result.contentLength));
+    } else if (result.estimatedBytes !== undefined) {
+      headers.set('X-Estimated-Bytes', String(result.estimatedBytes));
+    }
     headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     headers.set('X-Content-Type-Options', 'nosniff');
 
@@ -66,9 +72,17 @@ export async function GET(req: NextRequest) {
     });
   } catch (err: any) {
     console.error('API /download error:', err);
+    const message = err?.message || 'An unexpected error occurred during processing.';
+    const status = /rate limit/i.test(message) ? 429 : 502;
     return new NextResponse(
-      `Download error: ${err.message || 'An unexpected error occurred during processing.'}`,
-      { status: 500 }
+      `Download error: ${message}`,
+      {
+        status,
+        headers: {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'Cache-Control': 'no-store',
+        },
+      }
     );
   }
 }

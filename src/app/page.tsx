@@ -66,14 +66,12 @@ export default function Home() {
   const [isSelfHostModalOpen, setIsSelfHostModalOpen] = useState(false);
   const [isDonationModalOpen, setIsDonationModalOpen] = useState(false);
 
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const downloadAbortRef = useRef<AbortController | null>(null);
 
   // Clean up SSE on unmount
   useEffect(() => {
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
+      downloadAbortRef.current?.abort();
     };
   }, []);
 
@@ -132,8 +130,10 @@ export default function Home() {
     }
   };
 
-  // Start real-time download and connect to SSE progress feed
-  const handleStartDownload = () => {
+  // Download through fetch so the browser can observe errors and bytes received.
+  // This works on Vercel too: it does not depend on a second lambda sharing the
+  // in-memory SSE progress manager with the download lambda.
+  const handleStartDownload = async () => {
     if (!metadata) return;
 
     const currentPresets = activeTab === 'audio' ? metadata.presets.audio : metadata.presets.video;
@@ -142,53 +142,98 @@ export default function Home() {
 
     const jobId = 'job_' + Math.random().toString(36).substring(2, 11) + '_' + Date.now();
 
+    downloadAbortRef.current?.abort();
+    const abortController = new AbortController();
+    downloadAbortRef.current = abortController;
     setIsDownloading(true);
+    setErrorMessage(null);
     setDownloadProgress({
       jobId,
       status: 'initializing',
       percent: 5,
-      phase: 'Routing Dual Stream Core',
-      message: 'Connecting to media pipeline and resolving audio/video stream...',
+      phase: 'Routing Media Pipeline',
+      message: 'Connecting to the cookie-free media engine...',
     });
-
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close();
-    }
-
-    const sse = new EventSource(`/api/progress?jobId=${jobId}`);
-    eventSourceRef.current = sse;
-
-    sse.onmessage = (event) => {
-      try {
-        const data: ProgressEventData = JSON.parse(event.data);
-        if (data.status) {
-          setDownloadProgress(data);
-          if (data.status === 'completed' || data.status === 'error') {
-            setTimeout(() => {
-              setIsDownloading(false);
-              sse.close();
-            }, 2500);
-          }
-        }
-      } catch (e) {
-        // Heartbeat
-      }
-    };
-
-    sse.onerror = () => {
-      // Stream error or closed
-    };
 
     const downloadEndpoint = `/api/download?url=${encodeURIComponent(
       `https://www.youtube.com/watch?v=${metadata.id}`
     )}&preset=${encodeURIComponent(selectedPreset.id)}&jobId=${encodeURIComponent(jobId)}`;
 
-    const link = document.createElement('a');
-    link.href = downloadEndpoint;
-    link.style.display = 'none';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    try {
+      const response = await fetch(downloadEndpoint, {
+        signal: abortController.signal,
+        cache: 'no-store',
+      });
+
+      if (!response.ok) {
+        const message = (await response.text()).replace(/^Download error:\s*/i, '').trim();
+        throw new Error(message || `Download failed with HTTP ${response.status}.`);
+      }
+
+      if (!response.body) throw new Error('The server returned an empty download stream.');
+
+      const reader = response.body.getReader();
+      const chunks: BlobPart[] = [];
+      const totalBytes = Number(
+        response.headers.get('content-length') || response.headers.get('x-estimated-bytes') || 0
+      );
+      let receivedBytes = 0;
+      let lastPercent = 5;
+      let lastUpdate = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          receivedBytes += value.byteLength;
+          const now = Date.now();
+          if (now - lastUpdate > 120 || receivedBytes === totalBytes) {
+            lastUpdate = now;
+            const percent = totalBytes
+              ? Math.min(99, Math.round((receivedBytes / totalBytes) * 100))
+              : Math.min(95, Math.max(12, lastPercent + 1));
+            lastPercent = percent;
+            setDownloadProgress({
+              jobId,
+              status: 'downloading',
+              percent,
+              phase: activeTab === 'video' ? 'Downloading & Packaging Video' : 'Downloading & Encoding Audio',
+              bytesDownloaded: receivedBytes,
+              totalBytes: totalBytes || undefined,
+              message: totalBytes
+                ? `${(receivedBytes / 1024 / 1024).toFixed(1)} MB of ${(totalBytes / 1024 / 1024).toFixed(1)} MB`
+                : `${(receivedBytes / 1024 / 1024).toFixed(1)} MB received`,
+            });
+          }
+        }
+      }
+
+      const contentType = response.headers.get('content-type') || selectedPreset.mimeType;
+      const blob = new Blob(chunks, { type: contentType });
+      const contentDisposition = response.headers.get('content-disposition') || '';
+      const encodedName = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+      const plainName = contentDisposition.match(/filename="?([^";]+)"?/i)?.[1];
+      const filename = encodedName ? decodeURIComponent(encodedName) : plainName || `yt-load.${selectedPreset.format}`;
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+      setDownloadProgress({ jobId, status: 'completed', percent: 100, phase: 'Completed', message: 'Download ready!' });
+    } catch (err: any) {
+      if (err?.name !== 'AbortError') {
+        setDownloadProgress({ jobId, status: 'error', percent: 0, phase: 'Download Failed', message: err?.message || 'The media server could not complete this download.' });
+        setErrorMessage(err?.message || 'The media server could not complete this download.');
+      }
+    } finally {
+      setIsDownloading(false);
+      if (downloadAbortRef.current === abortController) downloadAbortRef.current = null;
+    }
   };
 
   const currentPresetList = metadata?.presets?.[activeTab] || [];

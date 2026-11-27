@@ -68,7 +68,10 @@ export function getYouTubeCookie(): string | undefined {
  * Creates custom fetch dispatcher when an HTTP/HTTPS/SOCKS proxy is configured.
  */
 export function getYouTubeProxyFetch(): typeof fetch | undefined {
-  const proxyUrl = process.env.YOUTUBE_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+  // Do not automatically inherit platform proxy variables. Vercel and other
+  // hosts may expose these for internal networking and they can break direct
+  // YouTube requests. Opt in with the app-specific variable only.
+  const proxyUrl = process.env.YOUTUBE_PROXY;
   if (!proxyUrl) return undefined;
 
   try {
@@ -99,10 +102,13 @@ export async function createResilientYtdl() {
   const poProvider = await getPoTokenProvider();
 
   return new Ytdl({
-    clients: [Client.Tv, Client.WebEmbedded, Client.VisionOS],
+    // VisionOS is the most reliable cookie-free client. Keep the embedded/TV
+    // clients as fallbacks for videos that do not expose a VisionOS format.
+    clients: [Client.VisionOS, Client.WebEmbedded, Client.Tv],
     ...(poProvider ? { getPoToken: poProvider } : {}),
     ...(cookie ? { cookie } : {}),
     ...(proxyFetch ? { fetch: proxyFetch } : {}),
+    timeoutMs: 45_000,
   });
 }
 
@@ -127,6 +133,8 @@ export async function getInnertube(): Promise<Innertube> {
       const client = await Innertube.create({
         cache: new UniversalCache(false),
         generate_session_locally: true,
+        lang: 'en',
+        location: 'US',
         ...(cookie ? { cookie } : {}),
         ...(proxyFetch ? { fetch: proxyFetch as any } : {}),
       });

@@ -17,6 +17,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://yt-load.vercel.app'),
   title: 'YT-LOAD // Zero-Ad High-Fidelity YouTube & YT Music Transcoder',
   description:
     'Complete, production-ready, open-source web application for extracting YouTube and YouTube Music media in highest available quality (MP3 320kbps, FLAC, M4A, 4K MP4) with zero ads.',
@@ -32,6 +33,10 @@ export const metadata: Metadata = {
     'innertube',
     'ffmpeg',
   ],
+  robots: {
+    index: true,
+    follow: true,
+  },
 };
 
 export default function RootLayout({
